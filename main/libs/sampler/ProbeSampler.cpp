@@ -36,6 +36,18 @@ DallasTemperature tempSensor(&oneWire);
 
 const char * ProbeSampler::TAG = "ProbeSampler";
 
+
+std::string getDateTime() {
+    // Get the current date and time
+    time_t now = time(0);
+    tm *ltm = localtime(&now);
+
+    // Store the current date and time in a string variable
+    char currentDateTime[20];
+    strftime(currentDateTime, sizeof(currentDateTime), "%Y-%m-%d %H:%M:%S", ltm);
+    return std::string(currentDateTime);
+}
+
 std::string twoDecimalString(float value) {
   int whole = (int)value;                       // Extract the whole part
   int decimal = (int)((value - whole) * 100);   // Extract the decimal part
@@ -111,10 +123,11 @@ SampleData averageSensorReadings(int numSamples) {
     return accumulatedData;
 }
 
-std::string writeSampleDataInTestingMode (SampleData data, int counter) {
+std::string writeSampleDataInTestingMode (std::string dateTime, float depth, SampleData data, int counter) {
 
     // writing sample data into string to be sent out via bluetooth
-    return "Temperature: " + 
+    return "dateTime: " + dateTime + "\nDepth: " + 
+    twoDecimalString(depth) + "m\nTemperature: " + 
     twoDecimalString(data.temperature) + "°C\nPressure: " + 
     std::to_string(data.pressure) +  "psi, " + 
     twoDecimalString(data.pressure_voltage) + "v\nTDS: " + 
@@ -152,7 +165,9 @@ std::string ProbeSampler::getSample() {
         if (testMode) {
             ESP_LOGI(TAG, "Probe in TEST MODE");
             ESP_LOGI( TAG, "getSample retrieved sample #%d ", counter );
-            return writeSampleDataInTestingMode(averageSensorReadings(10), counter++);
+            SampleData data = averageSensorReadings(10);
+            float depth = (data.pressure * psiToPa) / (waterDensity * gravity);
+            return writeSampleDataInTestingMode(getDateTime(), depth, data, counter++);
         } else {
             ESP_LOGI(TAG, "Probe in FIELD SAMPLING MODE");
             bool measuring = false;
@@ -162,13 +177,13 @@ std::string ProbeSampler::getSample() {
                 depthMeters = (pressurePSI * psiToPa) / (waterDensity * gravity);
                 ESP_LOGI(TAG, "Current depth: %f meters, last measure depth: %f meters ", depthMeters, lastRecordedDepthMeters);
 
-                delayMsec( 1000 );
+                delayMsec( 1000 );      //sleep until the next pressure reading
 
                 if (std::abs(depthMeters - lastRecordedDepthMeters) >= measurementDepthIntervalMeters - tolerance) {
                     if(!measuring) {
                         measuring = true;
                         ESP_LOGI(TAG, "Depth: %f meters. Starting measurements...", depthMeters);
-                        std::string sample = writeSampleDataInTestingMode(averageSensorReadings(10), counter++);
+                        std::string sample = writeSampleDataInTestingMode(getDateTime(), depthMeters, averageSensorReadings(10), counter++);
                         lastRecordedDepthMeters = round(depthMeters);
                         measuring = false;
                         return sample;
