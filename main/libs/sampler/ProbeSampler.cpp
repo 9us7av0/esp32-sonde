@@ -69,6 +69,7 @@ float getConductivity (float tds_input_voltage, float temperature) {
 }
 
 float getPressure (float pressure_input_voltage) {
+        ESP_LOGI( "getPressure", "...getting pressure..." );
         float pressure = 25 * pressure_input_voltage -12.5; // assuming 0.5V = 0 PSI and 4.5V = 100 PSI
         return (pressure > 0) ?  pressure :  0;
 }
@@ -97,7 +98,7 @@ SampleData averageSensorReadings(int numSamples) {
         accumulatedData.tds += data.tds;
         accumulatedData.tds_voltage += data.tds_voltage;
         accumulatedData.conductivity += data.conductivity;
-        delayMsec( 10 );                               // delay 10ms between each sample
+        delayMsec( 10 );                  // delay 10ms between each sample
     }
 
     accumulatedData.temperature /= numSamples;
@@ -172,10 +173,7 @@ std::string ProbeSampler::getSample() {
                         measuring = false;
                         return sample;
                     }
-
-
                 } else {    
-
                     return "Current Depth: " + std::to_string(depthMeters) + " meters\n";
                 }
             }
