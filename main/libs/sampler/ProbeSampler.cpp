@@ -22,7 +22,14 @@ struct SampleData {
     float conductivity;
 };
 
-float ADC_COMPENSATION = 1;                 // 0dB attenuation
+const float ADC_COMPENSATION = 1;                 // 0dB attenuation
+const double waterDensity = 997.0474;             // kg/m^3
+const double gravity = 9.80665;                   // m/s^2
+const double psiToPa = 6894.76;                   // 1 psi = 6894.76 Pa
+const double measurementDepthIntervalMeters = 1.0;  // 1 meter depth
+const double tolerance = 0.1;                     // 10% tolerance
+double depthMeters = 0;
+double lastMeasurementDepth = 0; //Keep track of last measurement depth
 boolean testMode = 1; 
 OneWire oneWire(TEMP_SENSOR_INPUT_PIN);
 DallasTemperature tempSensor(&oneWire);
@@ -147,7 +154,31 @@ std::string ProbeSampler::getSample() {
             return writeSampleDataInTestingMode(averageSensorReadings(10), counter++);
         } else {
             ESP_LOGI(TAG, "Probe in FIELD SAMPLING MODE");
-            return "";
+            bool measuring = false;
+            while(true) {
+                double pressurePSI = getPressure(getAnalogInputVoltage(PRESSURE_SENSOR_INPUT_PIN));
+                ESP_LOGI(TAG, "Pressure: %f psi", pressurePSI);
+                depthMeters = (pressurePSI * psiToPa) / (waterDensity * gravity);
+                ESP_LOGI(TAG, "Current depth: %f meters, last measure depth: %f meters ", depthMeters, lastMeasurementDepth);
+
+                delayMsec( 1000 );
+
+                if (std::abs(depthMeters - lastMeasurementDepth) >= measurementDepthIntervalMeters - tolerance) {
+                    if(!measuring) {
+                        measuring = true;
+                        ESP_LOGI(TAG, "Depth: %f meters. Starting measurements...", depthMeters);
+                        std::string sample = writeSampleDataInTestingMode(averageSensorReadings(10), counter++);
+                        lastMeasurementDepth = round(depthMeters);
+                        measuring = false;
+                        return sample;
+                    }
+
+
+                } else {    
+
+                    return "Current Depth: " + std::to_string(depthMeters) + " meters\n";
+                }
+            }
         }       
     }
 }
