@@ -29,7 +29,7 @@ const double psiToPa = 6894.76;                   // 1 psi = 6894.76 Pa
 const double measurementDepthIntervalMeters = 1.0;  // 1 meter depth
 const double tolerance = 0.1;                     // 10% tolerance
 double depthMeters = 0;
-double lastMeasurementDepth = 0; //Keep track of last measurement depth
+double lastRecordedDepthMeters = 0; //Keep track of last recorded depth
 boolean testMode = 1; 
 OneWire oneWire(TEMP_SENSOR_INPUT_PIN);
 DallasTemperature tempSensor(&oneWire);
@@ -160,16 +160,16 @@ std::string ProbeSampler::getSample() {
                 double pressurePSI = getPressure(getAnalogInputVoltage(PRESSURE_SENSOR_INPUT_PIN));
                 ESP_LOGI(TAG, "Pressure: %f psi", pressurePSI);
                 depthMeters = (pressurePSI * psiToPa) / (waterDensity * gravity);
-                ESP_LOGI(TAG, "Current depth: %f meters, last measure depth: %f meters ", depthMeters, lastMeasurementDepth);
+                ESP_LOGI(TAG, "Current depth: %f meters, last measure depth: %f meters ", depthMeters, lastRecordedDepthMeters);
 
                 delayMsec( 1000 );
 
-                if (std::abs(depthMeters - lastMeasurementDepth) >= measurementDepthIntervalMeters - tolerance) {
+                if (std::abs(depthMeters - lastRecordedDepthMeters) >= measurementDepthIntervalMeters - tolerance) {
                     if(!measuring) {
                         measuring = true;
                         ESP_LOGI(TAG, "Depth: %f meters. Starting measurements...", depthMeters);
                         std::string sample = writeSampleDataInTestingMode(averageSensorReadings(10), counter++);
-                        lastMeasurementDepth = round(depthMeters);
+                        lastRecordedDepthMeters = round(depthMeters);
                         measuring = false;
                         return sample;
                     }
