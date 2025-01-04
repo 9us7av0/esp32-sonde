@@ -21,7 +21,6 @@ struct SampleData {
     float tds;
     float conductivity;
 };
-
 const float ADC_COMPENSATION = 1;                 // 0dB attenuation
 const double waterDensity = 997.0474;             // kg/m^3
 const double gravity = 9.80665;                   // m/s^2
@@ -30,7 +29,7 @@ const double measurementDepthIntervalMeters = 1.0;  // 1 meter depth
 const double tolerance = 0.1;                     // 10% tolerance
 double depthMeters = 0;
 double lastRecordedDepthMeters = 0; //Keep track of last recorded depth
-boolean isTestMode = 1; 
+boolean isTestMode = 1;             // 1: test mode, 0: field sampling mode
 OneWire oneWire(TEMP_SENSOR_INPUT_PIN);
 DallasTemperature tempSensor(&oneWire);
 
@@ -61,6 +60,7 @@ float getAnalogInputVoltage (int inputPin) {
     // Calculate the volts per division taking account of the chosen attenuation value.
     float input = analogRead(inputPin);
     return input * REF_VOLTAGE * ADC_COMPENSATION / ADC_RESOLUTION;
+    ESP_LOGD( "getAnalogInputVoltage", "...voltage is %f...", input );
 }
 
 float getTDS (float tds_input_voltage) {
@@ -79,7 +79,7 @@ float getConductivity (float tds_input_voltage, float temperature) {
 }
 
 float getPressure (float pressure_input_voltage) {
-        ESP_LOGI( "getPressure", "...getting pressure from voltage %f...", pressure_input_voltage );
+        ESP_LOGD( "getPressure", "...getting pressure from voltage %f...", pressure_input_voltage );
         float pressure = 25 * pressure_input_voltage -12.5; // assuming 0.5V = 0 PSI and 4.5V = 100 PSI
         return (pressure > 0) ?  pressure :  0;
 }
@@ -123,7 +123,7 @@ SampleData averageSensorReadings(int numSamples) {
     return accumulatedData;
 }
 
-std::string writeSampleDataInTestingMode (std::string dateTime, float depth, SampleData data, int counter) {
+std::string writeSampleData (std::string dateTime, float depth, SampleData data, int counter) {
 
     // writing sample data into string to be sent out via bluetooth
     return "dateTime: " + dateTime + "\nDepth: " + 
@@ -166,16 +166,14 @@ std::string ProbeSampler::getSample() {
             ESP_LOGI( TAG, "getSample retrieved sample #%d ", counter );
             SampleData data = averageSensorReadings(10);
             float depth = (data.pressure * psiToPa) / (waterDensity * gravity);
-            return writeSampleDataInTestingMode(getDateTime(), depth, data, counter++);
+            return writeSampleData(getDateTime(), depth, data, counter++);
         } else {
             ESP_LOGI(TAG, "Probe in FIELD SAMPLING MODE");
             while(true) {
                 double pressurePSI= getPressure(getAnalogInputVoltage(PRESSURE_SENSOR_INPUT_PIN));
-                ESP_LOGI(TAG, "Pressure: %f psi", pressurePSI);
+                ESP_LOGD(TAG, "Pressure: %f psi", pressurePSI);
                 depthMeters = (pressurePSI * psiToPa) / (waterDensity * gravity);
                 ESP_LOGI(TAG, "Current depth: %f meters, last measure depth: %f meters ", depthMeters, lastRecordedDepthMeters);
-
-                delayMsec( 1000 );      //sleep until the next pressure reading
 
                 if (depthMeters < lastRecordedDepthMeters && depthMeters < measurementDepthIntervalMeters) {
                     ESP_LOGI(TAG, "Depth: %f meters. Probe went all the way up. Ending sampling...", depthMeters);
@@ -183,8 +181,9 @@ std::string ProbeSampler::getSample() {
                 } else if (std::abs(depthMeters - lastRecordedDepthMeters) >= measurementDepthIntervalMeters - tolerance) {
                     ESP_LOGI(TAG, "Depth: %f meters. Starting measurements...", depthMeters);
                     lastRecordedDepthMeters = round(depthMeters);
-                    return writeSampleDataInTestingMode(getDateTime(), depthMeters, averageSensorReadings(10), counter++);
+                    return writeSampleData(getDateTime(), depthMeters, averageSensorReadings(10), counter++);
                 } 
+                delayMsec( 1000 );      //sleep until the next pressure reading
             }
         }       
     }
