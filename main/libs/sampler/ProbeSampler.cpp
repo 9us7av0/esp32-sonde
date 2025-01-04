@@ -175,8 +175,6 @@ std::string ProbeSampler::getSample() {
                 depthMeters = (pressurePSI * psiToPa) / (waterDensity * gravity);
                 ESP_LOGI(TAG, "Current depth: %f meters, last measure depth: %f meters ", depthMeters, lastRecordedDepthMeters);
 
-                delayMsec( 1000 );      //sleep until the next pressure reading
-
                 if (depthMeters < lastRecordedDepthMeters && depthMeters < measurementDepthIntervalMeters) {
                     ESP_LOGI(TAG, "Depth: %f meters. Probe went all the way up. Ending sampling...", depthMeters);
                     return ""; 
@@ -185,6 +183,7 @@ std::string ProbeSampler::getSample() {
                     lastRecordedDepthMeters = round(depthMeters);
                     return writeSampleData(getDateTime(), depthMeters, averageSensorReadings(10), counter++);
                 } 
+                delayMsec( 1000 );      //sleep until the next pressure reading
             }
         }       
     }
