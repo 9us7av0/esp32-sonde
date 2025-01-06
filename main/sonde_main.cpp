@@ -11,6 +11,7 @@
 // Arduino framework
 #include "Arduino.h"
 
+#include "HardwareImplementations.cpp"
 #include "ProbeSampler.h"
 #include "CBluetoothPublisherService.h"
 #include "CSondeApp.h"
@@ -18,13 +19,16 @@
 // Tag for logging
 static const char * TAG = "sonde_main";
 
-extern "C" void app_main(void)
-{
+extern "C" void app_main(void) {
+    // Create hardware implementations
+    TemperatureSensor tempSensor;
+    AnalogInput analogInput;
+    DateTimeProvider dateTimeProvider;
     // Initialize the Arduino framework
     initArduino();
 
     // Create sampler and publisher
-    ProbeSampler sampler( 5 );
+    ProbeSampler sampler(5, &tempSensor, &analogInput, &dateTimeProvider);
     CBluetoothPublisherService publisher;
 
     //Create application and run it

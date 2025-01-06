@@ -1,9 +1,18 @@
 #include "ProbeSampler.h"
 #include "esp_log.h"
 #include "delay.h"
+#include "HardwareInterfaces.h"
+#include "HardwareImplementations.cpp"
 #include <Arduino.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <cmath>
+
+#define psiToPa 6894.76
+#define waterDensity 997.0474
+#define gravity 9.80665
+#define measurementDepthIntervalMeters 1.0
+#define tolerance 0.1
 
 #define PRESSURE_SENSOR_INPUT_PIN 36        // pin GPIO36 (ADC0) to pressure sensor
 #define TDS_SENSOR_INPUT_PIN      34        // pin GPIO34 (ADC1) to TDS sensor
@@ -21,29 +30,18 @@ struct SampleData {
     float tds;
     float conductivity;
 };
+TemperatureSensor* tempSensor;
+
+const float ADC_COMPENSATION_FACTOR = 1;                 // 0dB attenuation
+AnalogInput* analogInput;
+DateTimeProvider* dateTimeProvider;
 const float ADC_COMPENSATION = 1;                 // 0dB attenuation
-const double waterDensity = 997.0474;             // kg/m^3
-const double gravity = 9.80665;                   // m/s^2
-const double psiToPa = 6894.76;                   // 1 psi = 6894.76 Pa
-const double measurementDepthIntervalMeters = 1.0;  // 1 meter depth
-const double tolerance = 0.1;                     // 10% tolerance
 double depthMeters = 0;
 double lastRecordedDepthMeters = 0; //Keep track of last recorded depth
 boolean isTestMode = 1;             // 1: test mode, 0: field sampling mode
 OneWire oneWire(TEMP_SENSOR_INPUT_PIN);
-DallasTemperature tempSensor(&oneWire);
 
 const char * ProbeSampler::TAG = "ProbeSampler";
-
-
-std::string getDateTime() {
-    time_t now = time(0);
-    tm *ltm = localtime(&now);                   // get current date and time
-
-    char currentDateTime[20];
-    strftime(currentDateTime, sizeof(currentDateTime), "%Y-%m-%d %H:%M:%S", ltm);
-    return std::string(currentDateTime);
-}
 
 std::string twoDecimalString(float value) {
   int whole = (int)value;                       // Extract the whole part
@@ -54,13 +52,6 @@ std::string twoDecimalString(float value) {
 float getTemperatureInCelsius (DallasTemperature t) {
     t.requestTemperatures();                    // Request temperature readings
     return t.getTempCByIndex(0);                // read temperature in °C
-}
-
-float getAnalogInputVoltage (int inputPin) {
-    // Calculate the volts per division taking account of the chosen attenuation value.
-    float input = analogRead(inputPin);
-    return input * REF_VOLTAGE * ADC_COMPENSATION / ADC_RESOLUTION;
-    ESP_LOGD( "getAnalogInputVoltage", "...voltage is %f...", input );
 }
 
 float getTDS (float tds_input_voltage) {
@@ -78,20 +69,36 @@ float getConductivity (float tds_input_voltage, float temperature) {
     return (conductivity > 0) ? conductivity : 0;
 }
 
-float getPressure (float pressure_input_voltage) {
-        ESP_LOGD( "getPressure", "...getting pressure from voltage %f...", pressure_input_voltage );
-        float pressure = 25 * pressure_input_voltage -12.5; // assuming 0.5V = 0 PSI and 4.5V = 100 PSI
-        return (pressure > 0) ?  pressure :  0;
+/**
+ * @brief Converts the input voltage to pressure.
+ * 
+ * The formula used is: pressure = coefficientA * voltage + coefficientB
+ * Default coefficients assume 0.5V = 0 PSI and 4.5V = 100 PSI.
+ * 
+ * @param pressure_input_voltage The input voltage from the pressure sensor.
+ * @param coefficientA The coefficient for the voltage.
+ * @param coefficientB The offset coefficient.
+ * @return The calculated pressure.
+ */
+float getPressure(float pressure_input_voltage, float coefficientA = 25.0, float coefficientB = -12.5) {
+    ESP_LOGD("getPressure", "...getting pressure from voltage %f...", pressure_input_voltage);
+    float pressure = coefficientA * pressure_input_voltage + coefficientB;
+    return (pressure > 0) ? pressure : 0;
 }
 
 SampleData readAllSensors() {
     Serial.println("Reading sensors...");
-    SampleData data = {0, 0, 0, 0, 0, 0};;
+    SampleData data = {0, 0, 0, 0, 0, 0};
 
-    data.temperature = getTemperatureInCelsius(tempSensor);
-    data.pressure_voltage = getAnalogInputVoltage(PRESSURE_SENSOR_INPUT_PIN);
+    if (!tempSensor || !analogInput) {
+        ESP_LOGE("readAllSensors", "Sensors not initialized");
+        return data;
+    }
+
+    data.temperature = tempSensor->getTemperatureInCelsius();
+    data.pressure_voltage = analogInput->getAnalogInputVoltage(PRESSURE_SENSOR_INPUT_PIN);
     data.pressure = getPressure(data.pressure_voltage);
-    data.tds_voltage = getAnalogInputVoltage(TDS_SENSOR_INPUT_PIN);
+    data.tds_voltage = analogInput->getAnalogInputVoltage(TDS_SENSOR_INPUT_PIN);
     data.tds = getTDS(data.tds_voltage);
     data.conductivity = getConductivity(data.tds_voltage, data.temperature);
     return data;
@@ -137,20 +144,29 @@ std::string writeSampleData (std::string dateTime, float depth, SampleData data,
     std::to_string( counter ) + "\n\n";
 }
 
-ProbeSampler::ProbeSampler( const int samples )
-    : mSampleCounter( samples ) {
-    ESP_LOGI( TAG, "Instance created (samples = %d)", samples );
+ProbeSampler::ProbeSampler(const int samples)
+    : mSampleCounter(samples), tempSensor(), analogInput() {
+    ESP_LOGI(TAG, "Instance created (samples = %d)", samples);
 }
 
 ProbeSampler::~ProbeSampler(){ESP_LOGI( TAG, "Instance destroyed" );}
 
 bool ProbeSampler::init() {
-    ESP_LOGI( TAG, "Initializing ..." );
-    tempSensor.begin();                             // initialize temperature sensor
-    delayMsec( 1000 );
-    pinMode(TOGGLE_PIN, INPUT);                     // initialize toggle pin as input
-    isTestMode = digitalRead(TOGGLE_PIN);             // if 1: true, if 0: false
-    ESP_LOGI( TAG, "Initializing complete, ready to sample" );
+    ESP_LOGI(TAG, "Initializing ...");
+    delayMsec(1000);
+    pinMode(TOGGLE_PIN, INPUT); // initialize toggle pin as input
+    isTestMode = digitalRead(TOGGLE_PIN); // if 1: true, if 0: false
+
+    // Initialize tempSensor and analogInput
+    tempSensor = new TemperatureSensor();
+    analogInput = new AnalogInput();
+
+    if (!tempSensor || !analogInput) {
+        ESP_LOGE(TAG, "Failed to initialize sensors");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "Initializing complete, ready to sample");
     return true;
 }
 
@@ -166,11 +182,11 @@ std::string ProbeSampler::getSample() {
             ESP_LOGI( TAG, "getSample retrieved sample #%d ", counter );
             SampleData data = averageSensorReadings(10);
             float depth = (data.pressure * psiToPa) / (waterDensity * gravity);
-            return writeSampleData(getDateTime(), depth, data, counter++);
+            return writeSampleData(dateTimeProvider->getDateTime(), depth, data, counter++);
         } else {
             ESP_LOGI(TAG, "Probe in FIELD SAMPLING MODE");
             while(true) {
-                double pressurePSI= getPressure(getAnalogInputVoltage(PRESSURE_SENSOR_INPUT_PIN));
+                double pressurePSI= getPressure(analogInput->getAnalogInputVoltage(PRESSURE_SENSOR_INPUT_PIN));
                 ESP_LOGD(TAG, "Pressure: %f psi", pressurePSI);
                 depthMeters = (pressurePSI * psiToPa) / (waterDensity * gravity);
                 ESP_LOGI(TAG, "Current depth: %f meters, last measure depth: %f meters ", depthMeters, lastRecordedDepthMeters);
@@ -181,7 +197,7 @@ std::string ProbeSampler::getSample() {
                 } else if (std::abs(depthMeters - lastRecordedDepthMeters) >= measurementDepthIntervalMeters - tolerance) {
                     ESP_LOGI(TAG, "Depth: %f meters. Starting measurements...", depthMeters);
                     lastRecordedDepthMeters = round(depthMeters);
-                    return writeSampleData(getDateTime(), depthMeters, averageSensorReadings(10), counter++);
+                    return writeSampleData(dateTimeProvider->getDateTime(), depthMeters, averageSensorReadings(10), counter++);
                 } 
                 delayMsec( 1000 );      //sleep until the next pressure reading
             }
